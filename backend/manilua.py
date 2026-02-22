@@ -135,11 +135,22 @@ class maniluaManager:
             
             with open(lua_file, 'w', encoding='utf-8') as f:
                 f.write(f"addappid({appid})\n")
+                
+                # Write depots
                 for dep_id, key in depot_keys.items():
                     f.write(f'addappid({dep_id},0,"{key}")\n')
+                
+                # Write DLCs
+                if selected_dlcs:
+                    for dlc_id in selected_dlcs:
+                        key = dlc_keys.get(str(dlc_id))
+                        if key:
+                            f.write(f'addappid({dlc_id},0,"{key}")\n')
+                        else:
+                            f.write(f'addappid({dlc_id})\n')
                     
-            logger.log(f"Successfully generated {lua_file} with {len(depot_keys)} depots.")
-            return {'success': True, 'message': f'Installed config for {len(depot_keys)} depots.'}
+            logger.log(f"Successfully generated {lua_file} with {len(depot_keys)} depots and {len(selected_dlcs)} DLCs.")
+            return {'success': True, 'message': f'Installed config for {len(depot_keys)} depots and {len(selected_dlcs)} DLCs.'}
         except Exception as e:
             logger.error(f"Failed to write lua file: {e}")
             return {'success': False, 'error': str(e)}
