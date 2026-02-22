@@ -102,12 +102,16 @@ def FetchDepotsWithKeys(appid: int) -> str:
         logger.error(f'FetchDepotsWithKeys failed for {appid}: {e}')
         return error_response(str(e))
 
-def InstallDepots(appid: int, selectedDepots: list) -> str:
+def InstallDepots(*args, **kwargs) -> str:
     try:
-        result = plugin.manilua_manager.install_depots(appid, selectedDepots)
+        appid = kwargs.get('appid')
+        selected_depots = kwargs.get('selectedDepots', [])
+        selected_dlcs = kwargs.get('selectedDlcs', [])
+        
+        result = plugin.manilua_manager.install_depots(appid, selected_depots, selected_dlcs)
         return json_response(result)
     except Exception as e:
-        logger.error(f'InstallDepots failed for {appid}: {e}')
+        logger.error(f'InstallDepots failed for {kwargs.get("appid", "unknown")}: {e}')
         return error_response(str(e))
 
 def GetLocalLibrary() -> str:
