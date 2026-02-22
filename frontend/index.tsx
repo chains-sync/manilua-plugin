@@ -17,6 +17,11 @@ interface DepotInfo {
     has_key: boolean;
 }
 
+interface DlcInfo {
+    id: string;
+    has_key: boolean;
+}
+
 let isBusy = false;
 
 function backendLog(message: string) {
@@ -192,8 +197,7 @@ function createDepotModal(appId: number) {
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
 
-    // Fetch Depots
-    callBackend<BackendResponse<{ depots: DepotInfo[] }>>('FetchDepotsWithKeys', { appid: appId }).then((res) => {
+    callBackend<BackendResponse<{ depots: DepotInfo[], dlcs?: DlcInfo[] }>>('FetchDepotsWithKeys', { appid: appId }).then((res) => {
         content.innerHTML = ''; // clear loading
 
         if (!res.success || !res.depots || res.depots.length === 0) {
@@ -244,6 +248,8 @@ function createDepotModal(appId: number) {
             const cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.value = depot.id;
+            // mark depot as a depot in dataset
+            cb.dataset.type = 'depot';
             
             // Auto check rule: if has key and is "windows" or no specific language
             if (depot.has_key) {
@@ -308,13 +314,103 @@ function createDepotModal(appId: number) {
         table.appendChild(tbody);
         content.appendChild(table);
 
+        // --- DLC Section ---
+        if (res.dlcs && res.dlcs.length > 0) {
+            const dlcTitle = document.createElement('h3');
+            dlcTitle.textContent = `DLCs`;
+            dlcTitle.style.margin = '20px 0 10px 0';
+            dlcTitle.style.fontSize = '18px';
+            dlcTitle.style.fontWeight = '300';
+            dlcTitle.style.color = '#fff';
+            content.appendChild(dlcTitle);
+
+            const dlcTable = document.createElement('table');
+            dlcTable.style.width = '100%';
+            dlcTable.style.borderCollapse = 'collapse';
+            dlcTable.style.fontSize = '13px';
+            
+            const dlcThead = document.createElement('thead');
+            const dlcHeaderRow = document.createElement('tr');
+            dlcHeaderRow.style.background = 'rgba(0,0,0,0.5)';
+            dlcHeaderRow.style.color = '#c684ff'; // distinct color for DLC section
+            dlcHeaderRow.style.textAlign = 'left';
+
+            const dlcHeaders = ['Select', 'DLC ID', 'Key Status'];
+            dlcHeaders.forEach((text, i) => {
+                const th = document.createElement('th');
+                th.textContent = text;
+                th.style.padding = '8px 10px';
+                th.style.fontWeight = 'normal';
+                if (i === 0 || i === 1) th.style.width = '60px';
+                dlcHeaderRow.appendChild(th);
+            });
+            dlcThead.appendChild(dlcHeaderRow);
+            dlcTable.appendChild(dlcThead);
+
+            const dlcTbody = document.createElement('tbody');
+
+            res.dlcs.forEach((dlc, index) => {
+                const tr = document.createElement('tr');
+                tr.style.background = index % 2 === 0 ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0)';
+                tr.style.cursor = 'pointer';
+                tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+                
+                // Checkbox
+                const tdCheck = document.createElement('td');
+                tdCheck.style.padding = '8px 10px';
+                tdCheck.style.textAlign = 'center';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.value = dlc.id;
+                cb.dataset.type = 'dlc';
+                
+                // For DLCs, we leave it enabled regardless of key because user said:
+                // "if no key, write addappid(dlcid). if key, write addappid(dlcid, 0, key)"
+                cb.checked = dlc.has_key; // auto-check if we have the key, otherwise let them choose
+                
+                checkboxes.push(cb);
+                tdCheck.appendChild(cb);
+
+                tr.onclick = (e) => {
+                    if (e.target !== cb && !cb.disabled) cb.checked = !cb.checked;
+                };
+
+                // ID
+                const tdId = document.createElement('td');
+                tdId.style.padding = '8px 10px';
+                tdId.style.color = '#c684ff';
+                tdId.textContent = dlc.id;
+
+                // Status
+                const tdStatus = document.createElement('td');
+                tdStatus.style.padding = '8px 10px';
+                if (dlc.has_key) {
+                    tdStatus.textContent = 'Key Available in JSON';
+                    tdStatus.style.color = '#a3cc47';
+                } else {
+                    tdStatus.textContent = 'No JSON key (will add generic entry)';
+                    tdStatus.style.color = '#ffb84d'; // warning yellow
+                }
+
+                tr.appendChild(tdCheck);
+                tr.appendChild(tdId);
+                tr.appendChild(tdStatus);
+                dlcTbody.appendChild(tr);
+            });
+
+            dlcTable.appendChild(dlcTbody);
+            content.appendChild(dlcTable);
+        }
+
         installBtn.disabled = false;
         installBtn.style.opacity = '1';
 
         installBtn.onclick = async () => {
-            const selected = checkboxes.filter(c => c.checked && !c.disabled).map(c => c.value);
-            if (selected.length === 0) {
-                alert('Please select at least one depot.');
+            const selectedDepots = checkboxes.filter(c => c.checked && !c.disabled && c.dataset.type === 'depot').map(c => c.value);
+            const selectedDlcs = checkboxes.filter(c => c.checked && !c.disabled && c.dataset.type === 'dlc').map(c => c.value);
+            
+            if (selectedDepots.length === 0 && selectedDlcs.length === 0) {
+                alert('Please select at least one depot or DLC.');
                 return;
             }
 
@@ -324,7 +420,11 @@ function createDepotModal(appId: number) {
             content.style.opacity = '0.5';
 
             try {
-                const iRes = await callBackend<BackendResponse>('InstallDepots', { appid: appId, selectedDepots: selected });
+                const iRes = await callBackend<BackendResponse>('InstallDepots', { 
+                    appid: appId, 
+                    selectedDepots: selectedDepots,
+                    selectedDlcs: selectedDlcs
+                });
                 if (iRes.success) {
                     overlay.remove();
                     isBusy = false;
