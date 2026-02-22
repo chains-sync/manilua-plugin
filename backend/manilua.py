@@ -1,330 +1,128 @@
 import os
-import zipfile
-import threading
-from typing import Dict, Any, List, Optional
+import json
+import urllib.request
+import ssl
+from typing import Dict, Any, List
 import PluginUtils
-from http_client import get_global_client
 from steam_utils import get_stplug_in_path
-from api_manager import APIManager
-from config import API_BASE_URL, HTTP_CHUNK_SIZE, DOWNLOAD_PROGRESS_UPDATE_INTERVAL
-
-try:
-    import httpx
-    from httpx import HTTPStatusError
-    HTTPX_AVAILABLE = True
-except ImportError:
-    httpx = None
-    HTTPStatusError = None
-    HTTPX_AVAILABLE = False
 
 logger = PluginUtils.Logger()
 
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+
 class maniluaManager:
-    def __init__(self, backend_path: str, api_manager: APIManager):
+    def __init__(self, backend_path: str):
         self.backend_path = backend_path
-        self.api_manager = api_manager
-        self._download_state: Dict[int, Dict[str, Any]] = {}
-        self._download_lock = threading.Lock()
-        self._api_key = None
 
-    def set_api_key(self, api_key: str):
-        self._api_key = api_key
-
-    def get_api_key(self):
-        return self._api_key
-
-    def _set_download_state(self, appid: int, update: Dict[str, Any]) -> None:
-        with self._download_lock:
-            state = self._download_state.get(appid, {})
-            state.update(update)
-            self._download_state[appid] = state
-
-    def _get_download_state(self, appid: int) -> Dict[str, Any]:
-        with self._download_lock:
-            return self._download_state.get(appid, {}).copy()
-
-    def get_download_status(self, appid: int) -> Dict[str, Any]:
-        state = self._get_download_state(appid)
-        return {'success': True, 'state': state}
-
-    def _download_from_manilua_backend(self, appid: int, endpoint: str = "") -> None:
+    def _fetch_steamcmd_depots(self, appid: int) -> Dict[str, Any]:
         try:
-            self._set_download_state(appid, {
-                'status': 'checking',
-                'bytesRead': 0,
-                'totalBytes': 0,
-                'endpoint': endpoint
-            })
-
-            client = get_global_client()
-            if not client:
-                raise Exception("Failed to get HTTP client")
-
+            req = urllib.request.Request(
+                f"https://api.steamcmd.net/v1/info/{appid}",
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            )
+            with urllib.request.urlopen(req, context=ctx, timeout=15) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                depots = data.get('data', {}).get(str(appid), {}).get('depots', {})
+                return depots
         except Exception as e:
-            logger.error(f"Fatal error in download setup: {e}")
-            self._set_download_state(appid, {
-                'status': 'failed',
-                'error': f'Setup failed: {str(e)}'
-            })
-            return
+            logger.error(f"Failed to fetch from SteamCMD: {e}")
+            return {}
 
+    def _fetch_manifesthub_keys(self) -> Dict[str, str]:
         try:
-            download_url = f'{API_BASE_URL}/game/{appid}'
-
-            api_key = self.get_api_key()
-            params = {'appid': appid}
-
-            temp_zip_path = os.path.join(self.backend_path, f"temp_{appid}.zip")
-            bytes_read = 0
-            last_state_update_ts = 0.0
-
-            try:
-                with client.stream_get(download_url, params=params, auth_token=api_key) as resp:
-                    if not resp.is_success:
-                        if resp.status_code == 401:
-                            raise Exception("API key authentication failed")
-                        elif resp.status_code == 404:
-                            raise Exception(f"Game {appid} not found")
-                        else:
-                            raise Exception(f"HTTP {resp.status_code}: {resp.reason_phrase}")
-
-                    try:
-                        total = int(resp.headers.get('Content-Length', '0'))
-                    except Exception as e:
-                        logger.warn(f"Could not parse Content-Length header: {e}")
-                        total = 0
-
-                    content_type = resp.headers.get('content-type', '').lower()
-                    if 'application/json' in content_type:
-                        error_text = resp.read().decode('utf-8')
-                        logger.error(f"Received JSON error response: {error_text}")
-                        if resp.status_code == 401 or 'authentication' in error_text.lower():
-                            raise Exception("API key authentication failed")
-                        else:
-                            raise Exception(f"Server error: {error_text}")
-
-                    self._set_download_state(appid, {
-                        'status': 'downloading',
-                        'bytesRead': 0,
-                        'totalBytes': total
-                    })
-
-                    with open(temp_zip_path, 'wb', buffering=HTTP_CHUNK_SIZE) as f:
-                        for chunk in resp.iter_bytes(chunk_size=HTTP_CHUNK_SIZE):
-                            if not chunk:
-                                continue
-                            f.write(chunk)
-                            bytes_read += len(chunk)
-
-                            try:
-                                import time as _time
-                                now_ts = _time.time()
-                            except Exception as e:
-                                logger.warn(f"Could not get timestamp for download progress: {e}")
-                                now_ts = 0.0
-
-                            if last_state_update_ts == 0.0 or (now_ts - last_state_update_ts) >= DOWNLOAD_PROGRESS_UPDATE_INTERVAL:
-                                self._set_download_state(appid, {
-                                    'status': 'downloading',
-                                    'bytesRead': bytes_read,
-                                    'totalBytes': total,
-                                    'endpoint': endpoint
-                                })
-                                last_state_update_ts = now_ts
-
-                if bytes_read <= 0:
-                    raise Exception("Empty download from endpoint")
-
-                
-                self._set_download_state(appid, {
-                    'status': 'processing',
-                    'bytesRead': bytes_read,
-                    'totalBytes': bytes_read if total == 0 else total
-                })
-
-                logger.log(f"Downloaded {bytes_read} bytes to {temp_zip_path}")
-
-                try:
-                    is_zip = zipfile.is_zipfile(temp_zip_path)
-                except Exception as e:
-                    logger.warn(f"Could not verify if file is ZIP for app {appid}: {e}")
-                    is_zip = False
-
-                if is_zip:
-                    self._extract_and_add_lua_from_zip(appid, temp_zip_path, endpoint)
-                    if os.path.exists(temp_zip_path):
-                        os.remove(temp_zip_path)
-                else:
-                    try:
-                        target_dir = get_stplug_in_path()
-                        dest_file = os.path.join(target_dir, f"{appid}.lua")
-
-                        try:
-                            with open(temp_zip_path, 'rb') as src, open(dest_file, 'wb') as dst:
-                                dst.write(src.read())
-                            os.remove(temp_zip_path)
-                        except Exception as e:
-                            logger.warn(f"Could not copy file for app {appid}: {e}")
-                            raise
-
-                        self._set_download_state(appid, {
-                            'status': 'installing',
-                            'installedFiles': [dest_file],
-                            'installedPath': dest_file
-                        })
-                        logger.log(f"Installed single LUA file for app {appid}: {dest_file}")
-                    except Exception as e:
-                        logger.error(f"Failed to install non-zip payload for app {appid}: {e}")
-                        raise
-
-                self._set_download_state(appid, {
-                    'status': 'done',
-                    'success': True,
-                    'api': f'manilua ({endpoint})'
-                })
-
-            except Exception as e:
-                if os.path.exists(temp_zip_path):
-                    try:
-                        os.remove(temp_zip_path)
-                    except Exception as e2:
-                        logger.warn(f"Could not remove temp file on error cleanup for app {appid}: {e2}")
-
-                error_message = str(e)
-                if "authentication failed" in error_message.lower() or (HTTPX_AVAILABLE and HTTPStatusError is not None and isinstance(e, HTTPStatusError) and e.response.status_code == 401):
-                    logger.error(f"API key authentication failed for app {appid}")
-                    self._set_download_state(appid, {
-                        'status': 'auth_failed',
-                        'error': 'API key authentication failed. Please set a valid API key.',
-                        'requiresNewKey': True
-                    })
-                    return
-
-                self._set_download_state(appid, {
-                    'status': 'failed',
-                    'error': f'Download failed: {str(e)}'
-                })
-
+            req = urllib.request.Request(
+                "https://raw.githubusercontent.com/SteamAutoCracks/ManifestHub/refs/heads/main/depotkeys.json",
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            )
+            with urllib.request.urlopen(req, context=ctx, timeout=15) as response:
+                keys = json.loads(response.read().decode('utf-8'))
+                return keys
         except Exception as e:
-            logger.error(f"Backend download failed: {str(e)}")
-            self._set_download_state(appid, {
-                'status': 'failed',
-                'error': f'Backend error: {str(e)}'
-            })
+            logger.error(f"Failed to fetch keys from ManifestHub: {e}")
+            return {}
 
-    def _extract_and_add_lua_from_zip(self, appid: int, zip_path: str, endpoint: str) -> None:
-        try:
-            target_dir = get_stplug_in_path()
-            installed_files = []
-
-            self._set_download_state(appid, {'status': 'extracting'})
-            logger.log(f"Extracting ZIP file {zip_path} to {target_dir}")
-
-            with zipfile.ZipFile(zip_path, 'r') as zip_file:
-                file_list = zip_file.namelist()
-                logger.log(f"ZIP contains {len(file_list)} files")
-
-                lua_files = [f for f in file_list if f.lower().endswith('.lua')]
-
-                if not lua_files:
-                    logger.warn(f"No .lua files found in ZIP, extracting all files")
-                    lua_files = file_list
-
-                self._set_download_state(appid, {'status': 'installing'})
-
-                installed_files = []
-
-                for file_name in lua_files:
-                    if file_name.endswith('/'):
-                        continue
-
-                    try:
-                        file_content = zip_file.read(file_name)
-
-                        if file_name.lower().endswith('.lua'):
-                            base_name = os.path.basename(file_name)
-                            dest_file = os.path.join(target_dir, base_name)
-                        else:
-                            file_ext = os.path.splitext(file_name)[1] or '.txt'
-                            dest_file = os.path.join(target_dir, f"{appid}{file_ext}")
-
-                        if isinstance(file_content, bytes):
-                            if file_name.lower().endswith('.lua'):
-                                try:
-                                    decoded_content = file_content.decode('utf-8')
-                                    with open(dest_file, 'w', encoding='utf-8') as out:
-                                        out.write(decoded_content)
-                                except UnicodeDecodeError:
-                                    with open(dest_file, 'wb') as out:
-                                        out.write(file_content)
-                            else:
-                                with open(dest_file, 'wb') as out:
-                                    out.write(file_content)
-                        else:
-                            with open(dest_file, 'w', encoding='utf-8') as out:
-                                out.write(str(file_content))
-
-                        installed_files.append(dest_file)
-
-                    except Exception as e:
-                        logger.error(f"Failed to extract {file_name}: {e}")
-                        continue
-
-            if not installed_files:
-                raise Exception("No files were successfully extracted from ZIP")
-
-            logger.log(f"Successfully installed {len(installed_files)} files from {endpoint}")
-            self._set_download_state(appid, {
-                'installedFiles': installed_files,
-                'installedPath': installed_files[0] if installed_files else None
-            })
-
-        except zipfile.BadZipFile as e:
-            logger.error(f'Invalid ZIP file for app {appid}: {e}')
-            raise Exception(f"Invalid ZIP file: {str(e)}")
-        except Exception as e:
-            logger.error(f'Failed to extract ZIP for app {appid}: {e}')
-            raise
-
-    def add_via_lua(self, appid: int, endpoints: Optional[List[str]] = None) -> Dict[str, Any]:
+    def fetch_depots_with_keys(self, appid: int) -> Dict[str, Any]:
         try:
             appid = int(appid)
         except (ValueError, TypeError):
             return {'success': False, 'error': 'Invalid appid'}
 
+        depots_data = self._fetch_steamcmd_depots(appid)
+        keys_data = self._fetch_manifesthub_keys()
 
-        self._set_download_state(appid, {
-            'status': 'queued',
-            'bytesRead': 0,
-            'totalBytes': 0
-        })
+        if not depots_data:
+            return {'success': False, 'error': 'Failed to fetch depot info or top-level app has no depots.'}
 
-        available_endpoints = ['unified']
-        if endpoints:
-            available_endpoints = endpoints
+        # Build list of depots
+        parsed_depots = []
+        for depot_id, info in depots_data.items():
+            if not isinstance(info, dict) or not depot_id.isdigit():
+                continue
 
-        def safe_availability_check_wrapper(appid, endpoints_to_check):
-            try:
-                self._check_availability_and_download(appid, endpoints_to_check)
-            except Exception as e:
-                logger.error(f"Unhandled error in availability check thread: {e}")
-                self._set_download_state(appid, {
-                    'status': 'failed',
-                    'error': f'Availability check crashed: {str(e)}'
-                })
+            # Check if this depot is a game depot or DLC etc (some are just metadata)
+            config = info.get('config', {})
+            manifests = info.get('manifests', {})
+            
+            # Extract size from public manifest if available
+            size = None
+            if 'public' in manifests and isinstance(manifests['public'], dict):
+                size = manifests['public'].get('size')
+            
+            # Find key
+            has_key = str(depot_id) in keys_data
 
-        thread = threading.Thread(
-            target=safe_availability_check_wrapper,
-            args=(appid, available_endpoints),
-            daemon=True
-        )
-        thread.start()
+            parsed_depots.append({
+                'id': depot_id,
+                'name': info.get('name', 'Unknown'),
+                'config': config,
+                'size': size,
+                'has_key': has_key
+            })
 
-        return {'success': True}
+        return {
+            'success': True,
+            'depots': parsed_depots
+        }
 
-  
-    def _check_availability_and_download(self, appid: int, endpoints_to_check: List[str]) -> None:
-        self._download_from_manilua_backend(appid, 'unified')
+    def install_depots(self, appid: int, selected_depots: List[str]) -> Dict[str, Any]:
+        try:
+            appid = int(appid)
+            if not selected_depots:
+                return {'success': False, 'error': 'No depots selected'}
+        except (ValueError, TypeError):
+            return {'success': False, 'error': 'Invalid data passed'}
+
+        keys_data = self._fetch_manifesthub_keys()
+        
+        # Verify all requested have keys
+        missing_keys = []
+        depot_keys = {}
+        for dep in selected_depots:
+            key = keys_data.get(str(dep))
+            if key:
+                depot_keys[str(dep)] = key
+            else:
+                missing_keys.append(str(dep))
+        
+        if missing_keys:
+            logger.warn(f"Warning: Missing keys for depots: {missing_keys}")
+
+        try:
+            stplug_path = get_stplug_in_path()
+            lua_file = os.path.join(stplug_path, f'{appid}.lua')
+            
+            with open(lua_file, 'w', encoding='utf-8') as f:
+                f.write(f"addappid({appid})\n")
+                for dep_id, key in depot_keys.items():
+                    f.write(f'addappid({dep_id},0,"{key}")\n')
+                    
+            logger.log(f"Successfully generated {lua_file} with {len(depot_keys)} depots.")
+            return {'success': True, 'message': f'Installed config for {len(depot_keys)} depots.'}
+        except Exception as e:
+            logger.error(f"Failed to write lua file: {e}")
+            return {'success': False, 'error': str(e)}
 
     def remove_via_lua(self, appid: int) -> Dict[str, Any]:
         try:
