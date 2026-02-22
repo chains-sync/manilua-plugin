@@ -82,33 +82,52 @@ class maniluaManager:
                 'has_key': has_key
             })
 
+        # Parse DLCs
+        extended_data = app_info.get('extended', {})
+        dlc_str = extended_data.get('listofdlc', '')
+        parsed_dlcs = []
+        if dlc_str:
+            dlc_ids = [did.strip() for did in dlc_str.split(',') if did.strip().isdigit()]
+            for did in dlc_ids:
+                parsed_dlcs.append({
+                    'id': did,
+                    'has_key': str(did) in keys_data
+                })
+
         return {
             'success': True,
-            'depots': parsed_depots
+            'depots': parsed_depots,
+            'dlcs': parsed_dlcs
         }
 
-    def install_depots(self, appid: int, selected_depots: List[str]) -> Dict[str, Any]:
+    def install_depots(self, appid: int, selected_depots: List[str], selected_dlcs: List[str]) -> Dict[str, Any]:
         try:
             appid = int(appid)
-            if not selected_depots:
-                return {'success': False, 'error': 'No depots selected'}
         except (ValueError, TypeError):
             return {'success': False, 'error': 'Invalid data passed'}
 
         keys_data = self._fetch_manifesthub_keys()
         
-        # Verify all requested have keys
-        missing_keys = []
+        # Gather Depot keys
+        missing_depot_keys = []
         depot_keys = {}
-        for dep in selected_depots:
-            key = keys_data.get(str(dep))
-            if key:
-                depot_keys[str(dep)] = key
-            else:
-                missing_keys.append(str(dep))
-        
-        if missing_keys:
-            logger.warn(f"Warning: Missing keys for depots: {missing_keys}")
+        if selected_depots:
+            for dep in selected_depots:
+                key = keys_data.get(str(dep))
+                if key:
+                    depot_keys[str(dep)] = key
+                else:
+                    missing_depot_keys.append(str(dep))
+            if missing_depot_keys:
+                logger.warn(f"Warning: Missing keys for depots: {missing_depot_keys}")
+
+        # Gather DLC keys
+        dlc_keys = {}
+        if selected_dlcs:
+            for dlc in selected_dlcs:
+                key = keys_data.get(str(dlc))
+                if key:
+                    dlc_keys[str(dlc)] = key
 
         try:
             stplug_path = get_stplug_in_path()
