@@ -94,24 +94,20 @@ def hasluaForApp(appid: int) -> str:
         logger.error(f'hasluaForApp failed for {appid}: {e}')
         return error_response(str(e))
 
-def addViamanilua(appid: int) -> str:
+def FetchDepotsWithKeys(appid: int) -> str:
     try:
-        if not plugin.has_api_key():
-            return error_response('No API key configured. Please set an API key first.', requiresNewKey=True)
-
-        endpoints = plugin.api_manager.get_download_endpoints()
-        result = plugin.manilua_manager.add_via_lua(appid, endpoints)
+        result = plugin.manilua_manager.fetch_depots_with_keys(appid)
         return json_response(result)
     except Exception as e:
-        logger.error(f'addViamanilua failed for {appid}: {e}')
+        logger.error(f'FetchDepotsWithKeys failed for {appid}: {e}')
         return error_response(str(e))
 
-def GetStatus(appid: int) -> str:
+def InstallDepots(appid: int, selectedDepots: list) -> str:
     try:
-        result = plugin.manilua_manager.get_download_status(appid)
+        result = plugin.manilua_manager.install_depots(appid, selectedDepots)
         return json_response(result)
     except Exception as e:
-        logger.error(f'GetStatus failed for {appid}: {e}')
+        logger.error(f'InstallDepots failed for {appid}: {e}')
         return error_response(str(e))
 
 def GetLocalLibrary() -> str:
