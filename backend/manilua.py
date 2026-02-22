@@ -16,7 +16,7 @@ class maniluaManager:
     def __init__(self, backend_path: str):
         self.backend_path = backend_path
 
-    def _fetch_steamcmd_depots(self, appid: int) -> Dict[str, Any]:
+    def _fetch_steamcmd_info(self, appid: int) -> Dict[str, Any]:
         try:
             req = urllib.request.Request(
                 f"https://api.steamcmd.net/v1/info/{appid}",
@@ -24,8 +24,7 @@ class maniluaManager:
             )
             with urllib.request.urlopen(req, context=ctx, timeout=15) as response:
                 data = json.loads(response.read().decode('utf-8'))
-                depots = data.get('data', {}).get(str(appid), {}).get('depots', {})
-                return depots
+                return data.get('data', {}).get(str(appid), {})
         except Exception as e:
             logger.error(f"Failed to fetch from SteamCMD: {e}")
             return {}
@@ -49,11 +48,13 @@ class maniluaManager:
         except (ValueError, TypeError):
             return {'success': False, 'error': 'Invalid appid'}
 
-        depots_data = self._fetch_steamcmd_depots(appid)
+        app_info = self._fetch_steamcmd_info(appid)
         keys_data = self._fetch_manifesthub_keys()
 
-        if not depots_data:
+        if not app_info or not app_info.get('depots'):
             return {'success': False, 'error': 'Failed to fetch depot info or top-level app has no depots.'}
+
+        depots_data = app_info.get('depots', {})
 
         # Build list of depots
         parsed_depots = []
